@@ -1,9 +1,10 @@
 import {providers, Wallet} from 'ethers';
-import {Flashbots, BlockListener} from '@keep3r-network/keeper-scripting-utils';
+import {FlashbotsBundleProvider} from '@flashbots/ethers-provider-bundle';
+import {FlashbotsBroadcastor, BlockListener} from '@keep3r-network/keeper-scripting-utils';
 import dotenv from 'dotenv';
 import {getEnvVariable} from './utils/misc';
-import {CHAIN_ID, FLASHBOTS_RPC} from './utils/contants';
-import {workFetchIfNeeded, getAllWhitelistedSalts} from './fetch-strategy';
+import {getAllWhitelistedSalts} from './fetch-strategy';
+import { getMainnetSdk } from '@dethcrypto/eth-sdk-client';
 
 dotenv.config();
 
@@ -11,10 +12,16 @@ dotenv.config();
                           SETUP
 /*============================================================== */
 
+const GAS_LIMIT = 700_000;
+const PRIORITY_FEE = 2e9;
+const WORK_METHOD = 'work(bytes32,uint8)';
+
 // environment variables usage
 const provider = new providers.WebSocketProvider(getEnvVariable('RPC_WSS_URI'));
 const txSigner = new Wallet(getEnvVariable('TX_SIGNER_PRIVATE_KEY'), provider);
 const bundleSigner = new Wallet(getEnvVariable('BUNDLE_SIGNER_PRIVATE_KEY'), provider);
+
+const {dataFeedJob: job} = getMainnetSdk(txSigner);
 
 const blockListener = new BlockListener(provider);
 
@@ -27,7 +34,8 @@ const triggerReason = 1;
 /*============================================================== */
 
 export async function run(): Promise<void> {
-  const flashbots = await Flashbots.init(txSigner, bundleSigner, provider, [FLASHBOTS_RPC], true, CHAIN_ID);
+  const flashbotsProvider = await FlashbotsBundleProvider.create(provider, bundleSigner);
+  const flashbotBroadcastor = new FlashbotsBroadcastor(flashbotsProvider, PRIORITY_FEE, GAS_LIMIT);
 
   // Create a subscription and start listening to upcoming blocks
   blockListener.stream(async (block) => {
@@ -35,7 +43,7 @@ export async function run(): Promise<void> {
     const WHITELISTED_POOL_SALTS = await getAllWhitelistedSalts();
     await Promise.all(
       WHITELISTED_POOL_SALTS.map(async (poolSalt) => {
-        return workFetchIfNeeded(flashbots, block, poolSalt, triggerReason);
+        flashbotBroadcastor.tryToWorkOnFlashbots(job, WORK_METHOD, [poolSalt, triggerReason], block)
       }),
     );
   });
