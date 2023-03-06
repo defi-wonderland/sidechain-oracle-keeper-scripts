@@ -18,7 +18,7 @@ const GAS_LIMIT = 700_000;
 const WORK_METHOD = 'work(uint32,bytes32,uint24,(uint32,int24)[])';
 const PRIORITY_FEE = 2e9;
 
-// environment variables usage
+// Environment variables usage
 const provider = new providers.WebSocketProvider(getEnvVariable('RPC_WSS_URI'));
 const txSigner = new Wallet(getEnvVariable('TX_SIGNER_PRIVATE_KEY'), provider);
 const bundleSigner = new Wallet(getEnvVariable('BUNDLE_SIGNER_PRIVATE_KEY'), provider);
@@ -76,7 +76,7 @@ function parseEvent(event: Event): {poolSalt: string; poolNonce: number; observa
 export async function run(): Promise<void> {
   const flashbotsProvider = await FlashbotsBundleProvider.create(provider, bundleSigner);
   const flashbotBroadcastor = new FlashbotsBroadcastor(flashbotsProvider, PRIORITY_FEE, GAS_LIMIT);
-  
+
   dataFeed.attach(await job.dataFeed()); // Enforces dataFeed to be the job's one
 
   console.info('Waiting for event PoolObserved...');

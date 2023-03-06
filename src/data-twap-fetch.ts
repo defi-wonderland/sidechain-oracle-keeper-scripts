@@ -2,9 +2,9 @@ import {providers, Wallet} from 'ethers';
 import {FlashbotsBundleProvider} from '@flashbots/ethers-provider-bundle';
 import {FlashbotsBroadcastor, BlockListener} from '@keep3r-network/keeper-scripting-utils';
 import dotenv from 'dotenv';
+import {getMainnetSdk} from '@dethcrypto/eth-sdk-client';
 import {getEnvVariable} from './utils/misc';
 import {getAllWhitelistedSalts} from './fetch-strategy';
-import { getMainnetSdk } from '@dethcrypto/eth-sdk-client';
 
 dotenv.config();
 
@@ -16,7 +16,7 @@ const GAS_LIMIT = 700_000;
 const PRIORITY_FEE = 2e9;
 const WORK_METHOD = 'work(bytes32,uint8)';
 
-// environment variables usage
+// Environment variables usage
 const provider = new providers.WebSocketProvider(getEnvVariable('RPC_WSS_URI'));
 const txSigner = new Wallet(getEnvVariable('TX_SIGNER_PRIVATE_KEY'), provider);
 const bundleSigner = new Wallet(getEnvVariable('BUNDLE_SIGNER_PRIVATE_KEY'), provider);
@@ -43,7 +43,7 @@ export async function run(): Promise<void> {
     const WHITELISTED_POOL_SALTS = await getAllWhitelistedSalts();
     await Promise.all(
       WHITELISTED_POOL_SALTS.map(async (poolSalt) => {
-        flashbotBroadcastor.tryToWorkOnFlashbots(job, WORK_METHOD, [poolSalt, triggerReason], block)
+        await flashbotBroadcastor.tryToWorkOnFlashbots(job, WORK_METHOD, [poolSalt, triggerReason], block);
       }),
     );
   });
