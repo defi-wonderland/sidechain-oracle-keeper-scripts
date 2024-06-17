@@ -1,11 +1,11 @@
-import { getMainnetSdk } from '@dethcrypto/eth-sdk-client';
-import type { Event } from 'ethers';
-import { providers, Wallet } from 'ethers';
-import { FlashbotsBundleProvider } from '@flashbots/ethers-provider-bundle';
-import { FlashbotsBroadcastor } from '@keep3r-network/keeper-scripting-utils';
+import {getMainnetSdk} from '@dethcrypto/eth-sdk-client';
+import type {Event} from 'ethers';
+import {providers, Wallet} from 'ethers';
+import {FlashbotsBundleProvider} from '@flashbots/ethers-provider-bundle';
+import {FlashbotsBroadcastor} from '@keep3r-network/keeper-scripting-utils';
 import dotenv from 'dotenv';
-import { getEnvVariable } from './utils/misc';
-import { PAST_BLOCKS, SUPPORTED_CHAIN_IDS } from './utils/contants';
+import {getEnvVariable} from './utils/misc';
+import {PAST_BLOCKS, SUPPORTED_CHAIN_IDS} from './utils/contants';
 
 dotenv.config();
 
@@ -17,16 +17,16 @@ const GAS_LIMIT = 700_000;
 const WORK_METHOD = 'work(uint32,bytes32,uint24,(uint32,int24)[])';
 const PRIORITY_FEE = 2e9;
 const MAX_RETRIES = 3;
-const RETRY_INTERVAL = 60000;
+const RETRY_INTERVAL = 60_000;
 
 // Environment variables usage
 const provider = new providers.JsonRpcProvider(getEnvVariable('RPC_WSS_URI'));
 const txSigner = new Wallet(getEnvVariable('TX_SIGNER_PRIVATE_KEY'), provider);
 const bundleSigner = new Wallet(getEnvVariable('BUNDLE_SIGNER_PRIVATE_KEY'), provider);
 
-const { dataFeedJob: job, dataFeed } = getMainnetSdk(txSigner);
+const {dataFeedJob: job, dataFeed} = getMainnetSdk(txSigner);
 
-const failedEventsQueue: { event: EventData; retries: number }[] = [];
+const failedEventsQueue: Array<{event: EventData; retries: number}> = [];
 
 type PoolObservedEvent = {
   _poolSalt: string;
@@ -61,24 +61,24 @@ export async function initialize(): Promise<void> {
 
   await Promise.all(
     queryResults.map(async (event: Event) => {
-      const { poolSalt, poolNonce, observationsData } = parseEvent(event);
+      const {poolSalt, poolNonce, observationsData} = parseEvent(event);
       const block = await provider.getBlock('latest');
       await Promise.all(
         SUPPORTED_CHAIN_IDS.map(async (chainId) => {
           await handleTransaction(chainId, poolSalt, poolNonce, observationsData, block, flashbotBroadcastor);
-        })
+        }),
       );
-    })
+    }),
   );
 }
 
-function parseEvent(event: Event): { poolSalt: string; poolNonce: number; observationsData: Array<[number, number]> } {
+function parseEvent(event: Event): {poolSalt: string; poolNonce: number; observationsData: Array<[number, number]>} {
   const parsedEvent = dataFeed.interface.decodeEventLog('PoolObserved', event.data, event.topics) as unknown as PoolObservedEvent;
-  console.debug(`Parsing event`, { parsedEvent });
+  console.debug(`Parsing event`, {parsedEvent});
   const poolSalt = parsedEvent._poolSalt;
   const poolNonce = parsedEvent._poolNonce;
   const observationsData = parsedEvent._observationsData;
-  return { poolSalt, poolNonce, observationsData };
+  return {poolSalt, poolNonce, observationsData};
 }
 
 async function handleTransaction(
@@ -88,38 +88,46 @@ async function handleTransaction(
   observationsData: Array<[number, number]>,
   block: providers.Block,
   flashbotBroadcastor: FlashbotsBroadcastor,
-  retries = 0
+  retries = 0,
 ): Promise<void> {
-  try {
-    await flashbotBroadcastor.tryToWorkOnFlashbots({
+  flashbotBroadcastor
+    .tryToWorkOnFlashbots({
       jobContract: job,
       workMethod: WORK_METHOD,
       workArguments: [chainId, poolSalt, poolNonce, observationsData],
       block,
+    })
+    .catch((error) => {
+      console.error(`Transaction failed for chainId ${chainId}, retry ${retries}`, error);
+      if (retries < MAX_RETRIES) {
+        setTimeout(
+          async () => handleTransaction(chainId, poolSalt, poolNonce, observationsData, block, flashbotBroadcastor, retries + 1),
+          RETRY_INTERVAL,
+        );
+      } else {
+        failedEventsQueue.push({event: {chainId, poolSalt, poolNonce, observationsData, block}, retries});
+      }
     });
-  } catch (error) {
-    console.error(`Transaction failed for chainId ${chainId}, retry ${retries}`, error);
-    if (retries < MAX_RETRIES) {
-      setTimeout(
-        () => handleTransaction(chainId, poolSalt, poolNonce, observationsData, block, flashbotBroadcastor, retries + 1),
-        RETRY_INTERVAL
-      );
-    } else {
-      failedEventsQueue.push({ event: { chainId, poolSalt, poolNonce, observationsData, block }, retries });
-    }
-  }
 }
 
-function processFailedEvents(flashbotBroadcastor: FlashbotsBroadcastor) {
-  failedEventsQueue.forEach(async (item, index) => {
-    const { event, retries } = item;
-    try {
-      await handleTransaction(event.chainId, event.poolSalt, event.poolNonce, event.observationsData, event.block, flashbotBroadcastor, retries);
-      failedEventsQueue.splice(index, 1);
-    } catch (error) {
+async function processFailedEvents(flashbotBroadcastor: FlashbotsBroadcastor) {
+  const failedEventsResend = failedEventsQueue.map(async (failedEvent) => {
+    const {event, retries} = failedEvent;
+    return handleTransaction(
+      event.chainId,
+      event.poolSalt,
+      event.poolNonce,
+      event.observationsData,
+      event.block,
+      flashbotBroadcastor,
+      retries,
+    ).catch((error) => {
       console.error(`Failed to process queued event after ${retries} retries`, error);
-    }
+      failedEventsQueue.push(failedEvent);
+    });
   });
+  failedEventsQueue.length = 0;
+  await Promise.all(failedEventsResend);
 }
 
 export async function run(): Promise<void> {
@@ -140,18 +148,20 @@ export async function run(): Promise<void> {
 
     const block = await provider.getBlock(event.blockNumber);
 
-    console.info(`Event arrived`, { event });
-    const { poolSalt, poolNonce, observationsData } = parseEvent(event);
+    console.info(`Event arrived`, {event});
+    const {poolSalt, poolNonce, observationsData} = parseEvent(event);
 
-    console.info(`Data fetch`, { poolSalt, poolNonce, observationsData });
+    console.info(`Data fetch`, {poolSalt, poolNonce, observationsData});
     await Promise.all(
       SUPPORTED_CHAIN_IDS.map(async (chainId) => {
         await handleTransaction(chainId, poolSalt, poolNonce, observationsData, block, flashbotBroadcastor);
-      })
+      }),
     );
   });
 
-  setInterval(() => processFailedEvents(flashbotBroadcastor), RETRY_INTERVAL);
+  setInterval(async () => {
+    await processFailedEvents(flashbotBroadcastor);
+  }, RETRY_INTERVAL);
 }
 
 (async () => {
