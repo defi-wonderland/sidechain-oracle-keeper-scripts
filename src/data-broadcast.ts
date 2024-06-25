@@ -81,6 +81,7 @@ function parseEvent(event: Event): {poolSalt: string; poolNonce: number; observa
   return {poolSalt, poolNonce, observationsData};
 }
 
+// eslint-disable-next-line max-params
 async function handleTransaction(
   chainId: number,
   poolSalt: string,
