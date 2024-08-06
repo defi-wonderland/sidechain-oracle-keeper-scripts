@@ -1,12 +1,12 @@
-import {getMainnetSdk} from '@dethcrypto/eth-sdk-client';
-import type {TransactionRequest} from '@ethersproject/abstract-provider';
 import type {Contract, Event} from 'ethers';
-import {providers, Wallet} from 'ethers';
+import {providers, Wallet, ethers} from 'ethers';
 import {FlashbotsBundleProvider} from '@flashbots/ethers-provider-bundle';
 import {FlashbotsBroadcastor} from '@keep3r-network/keeper-scripting-utils';
 import dotenv from 'dotenv';
+import DataFeedABI from '../abis/dataFeed.json';
+import DataFeedJobABI from '../abis/dataFeedJob.json';
 import {getEnvVariable} from './utils/misc';
-import {PAST_BLOCKS, SUPPORTED_CHAIN_IDS} from './utils/contants';
+import {PAST_BLOCKS, SUPPORTED_CHAIN_IDS, contracts} from './utils/contants';
 
 dotenv.config();
 
@@ -23,7 +23,9 @@ const provider = new providers.WebSocketProvider(getEnvVariable('RPC_WSS_URI'));
 const txSigner = new Wallet(getEnvVariable('TX_SIGNER_PRIVATE_KEY'), provider);
 const bundleSigner = new Wallet(getEnvVariable('BUNDLE_SIGNER_PRIVATE_KEY'), provider);
 
-const {dataFeedJob: job, dataFeed} = getMainnetSdk(txSigner);
+let job: Contract;
+let dataFeed: Contract;
+let chainId: number;
 
 // Flag to track if there's a transaction in progress. Pool salt + pool nonce => status
 const txInProgress: Record<string, boolean> = {};
@@ -41,6 +43,10 @@ type PoolObservedEvent = {
 export async function initialize(): Promise<void> {
   const flashbotsProvider = await FlashbotsBundleProvider.create(provider, bundleSigner);
   const flashbotBroadcastor = new FlashbotsBroadcastor(flashbotsProvider, PRIORITY_FEE, GAS_LIMIT);
+
+  chainId = flashbotsProvider.network.chainId;
+  dataFeed = new ethers.Contract(contracts[chainId].dataFeed, DataFeedABI, txSigner);
+  job = new ethers.Contract(contracts[chainId].job, DataFeedJobABI, txSigner);
 
   dataFeed.attach(await job.dataFeed()); // Enforces dataFeed to be the job's one
 

@@ -1,9 +1,11 @@
-import {providers, Wallet} from 'ethers';
+import {providers, Wallet, Contract} from 'ethers';
 import {FlashbotsBundleProvider} from '@flashbots/ethers-provider-bundle';
 import {FlashbotsBroadcastor, BlockListener} from '@keep3r-network/keeper-scripting-utils';
 import dotenv from 'dotenv';
-import {getMainnetSdk} from '@dethcrypto/eth-sdk-client';
+import DataFeedABI from '../abis/dataFeed.json';
+import DataFeedJobABI from '../abis/dataFeedJob.json';
 import {getEnvVariable} from './utils/misc';
+import {contracts} from './utils/contants';
 import {getAllWhitelistedSalts} from './fetch-strategy';
 
 dotenv.config();
@@ -21,7 +23,9 @@ const provider = new providers.WebSocketProvider(getEnvVariable('RPC_WSS_URI'));
 const txSigner = new Wallet(getEnvVariable('TX_SIGNER_PRIVATE_KEY'), provider);
 const bundleSigner = new Wallet(getEnvVariable('BUNDLE_SIGNER_PRIVATE_KEY'), provider);
 
-const {dataFeedJob: job} = getMainnetSdk(txSigner);
+let dataFeed: Contract;
+let job: Contract;
+let chainId: number;
 
 const blockListener = new BlockListener(provider);
 
@@ -37,10 +41,13 @@ export async function run(): Promise<void> {
   const flashbotsProvider = await FlashbotsBundleProvider.create(provider, bundleSigner);
   const flashbotBroadcastor = new FlashbotsBroadcastor(flashbotsProvider, PRIORITY_FEE, GAS_LIMIT);
 
+  dataFeed = new Contract(contracts[chainId].dataFeed, DataFeedABI, txSigner);
+  job = new Contract(contracts[chainId].job, DataFeedJobABI, txSigner);
+
   // Create a subscription and start listening to upcoming blocks
   blockListener.stream(async (block) => {
     // In each block, try to work every supported pool
-    const WHITELISTED_POOL_SALTS = await getAllWhitelistedSalts();
+    const WHITELISTED_POOL_SALTS = await getAllWhitelistedSalts(dataFeed, job);
     await Promise.all(
       WHITELISTED_POOL_SALTS.map(async (poolSalt) => {
         await flashbotBroadcastor.tryToWorkOnFlashbots({
