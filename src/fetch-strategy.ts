@@ -1,19 +1,14 @@
 import {getMainnetSdk} from '@dethcrypto/eth-sdk-client';
-import {providers, Wallet} from 'ethers';
-import dotenv from 'dotenv';
-import {getEnvVariable} from './utils/misc';
-
-dotenv.config();
+import {providers} from 'ethers';
+import {getEnvVariable} from '@keep3r-network/keeper-scripting-utils';
 
 /* ==============================================================/*
                           SETUP
 /*============================================================== */
 
 // environment variables usage
-const provider = new providers.WebSocketProvider(getEnvVariable('RPC_WSS_URI'));
-const txSigner = new Wallet(getEnvVariable('TX_SIGNER_PRIVATE_KEY'), provider);
-
-const {dataFeedJob: job, dataFeed} = getMainnetSdk(txSigner);
+const provider = new providers.WebSocketProvider(getEnvVariable('RPC_HTTP_MAINNET_URI'));
+const {dataFeedJob: job, dataFeed} = getMainnetSdk(provider);
 
 /* ==============================================================/*
                       AVAILABLE POOLS

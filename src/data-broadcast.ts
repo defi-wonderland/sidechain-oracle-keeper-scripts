@@ -1,14 +1,8 @@
 import {getMainnetSdk} from '@dethcrypto/eth-sdk-client';
-import type {TransactionRequest} from '@ethersproject/abstract-provider';
-import type {Contract, Event} from 'ethers';
+import type {Event} from 'ethers';
 import {providers, Wallet} from 'ethers';
-import {FlashbotsBundleProvider} from '@flashbots/ethers-provider-bundle';
-import {FlashbotsBroadcastor} from '@keep3r-network/keeper-scripting-utils';
-import dotenv from 'dotenv';
-import {getEnvVariable} from './utils/misc';
+import {PrivateBroadcastor, getEnvVariable} from '@keep3r-network/keeper-scripting-utils';
 import {PAST_BLOCKS, SUPPORTED_CHAIN_IDS} from './utils/contants';
-
-dotenv.config();
 
 /* ==============================================================/*
                           SETUP
@@ -17,13 +11,16 @@ dotenv.config();
 const GAS_LIMIT = 700_000;
 const WORK_METHOD = 'work(uint32,bytes32,uint24,(uint32,int24)[])';
 const PRIORITY_FEE = 2e9;
+const CHAIN_ID = 1;
+const builders = ['https://rpc.titanbuilder.xyz/', 'https://rpc.beaverbuild.org/'];
 
 // Environment variables usage
-const provider = new providers.WebSocketProvider(getEnvVariable('RPC_WSS_URI'));
+const provider = new providers.JsonRpcProvider(getEnvVariable('RPC_HTTP_MAINNET_URI'));
+const providerForLogs = new providers.JsonRpcProvider(getEnvVariable('RPC_HTTP_MAINNET_URI_FOR_LOGS'));
 const txSigner = new Wallet(getEnvVariable('TX_SIGNER_PRIVATE_KEY'), provider);
-const bundleSigner = new Wallet(getEnvVariable('BUNDLE_SIGNER_PRIVATE_KEY'), provider);
 
 const {dataFeedJob: job, dataFeed} = getMainnetSdk(txSigner);
+// NOTE: this broadcastor only works for eth mainnet
 
 // Flag to track if there's a transaction in progress. Pool salt + pool nonce => status
 const txInProgress: Record<string, boolean> = {};
@@ -39,29 +36,55 @@ type PoolObservedEvent = {
 /*============================================================== */
 
 export async function initialize(): Promise<void> {
-  const flashbotsProvider = await FlashbotsBundleProvider.create(provider, bundleSigner);
-  const flashbotBroadcastor = new FlashbotsBroadcastor(flashbotsProvider, PRIORITY_FEE, GAS_LIMIT);
+  const broadcastor = new PrivateBroadcastor(builders, PRIORITY_FEE, GAS_LIMIT, true, CHAIN_ID);
 
   dataFeed.attach(await job.dataFeed()); // Enforces dataFeed to be the job's one
 
   const block = await provider.getBlock('latest');
   const queryBlock = block.number - PAST_BLOCKS;
-  // eslint-disable-next-line new-cap
-  const evtFilter = dataFeed.filters.PoolObserved();
-  const queryResults = await dataFeed.queryFilter(evtFilter, queryBlock);
   console.info('Reading PoolObserved events since block', queryBlock);
 
-  await Promise.all(
-    queryResults.map(async (event: Event) => {
-      const {poolSalt, poolNonce, observationsData} = parseEvent(event);
-      const block = await provider.getBlock('latest');
-      await Promise.all(
-        SUPPORTED_CHAIN_IDS.map(async (chainId) => {
-          return flashbotBroadcastor.tryToWorkOnFlashbots(job, WORK_METHOD, [poolSalt, poolNonce, chainId, observationsData], block);
-        }),
-      );
-    }),
-  );
+  // Query events and parse them
+  const evtFilter = dataFeed.filters.PoolObserved();
+  const queryResults = await dataFeed.queryFilter(evtFilter, queryBlock);
+  const parsedEvents = queryResults.map(event => parseEvent(event));
+
+  // Extract unique poolSalts
+  const uniquePoolSalts = new Set(parsedEvents.map(event => event.poolSalt));
+
+  // Sort events by poolNonce
+  const sortedEvents = parsedEvents.sort((a, b) => a.poolNonce - b.poolNonce);
+
+  // Mapping `lastObservedPoolNonce` per poolSalt, chainId
+  const lastObservedPoolNonce: Record<string, Record<number, number>> = {};
+  for (const poolSalt of uniquePoolSalts) {
+    lastObservedPoolNonce[poolSalt] = {};
+    await Promise.all(
+      SUPPORTED_CHAIN_IDS.map(async (chainId) => {
+        lastObservedPoolNonce[poolSalt][chainId] = await job.lastPoolNonceBridged(chainId, poolSalt);
+      })
+    );
+  }
+
+  // Process each sorted event sequentially
+  for (const event of sortedEvents) {
+    const { poolSalt, poolNonce, observationsData } = event;
+
+    for (const chainId of SUPPORTED_CHAIN_IDS) {
+      // If poolNonce is less than or equal to lastObservedPoolNonce[poolSalt][chainId], skip processing
+      if (poolNonce <= lastObservedPoolNonce[poolSalt][chainId]) {
+        console.info(`Skipping event`, { poolSalt, poolNonce });
+        continue;
+      }
+
+      await broadcastor.tryToWork({
+        jobContract: job,
+        workMethod: WORK_METHOD,
+        workArguments: [chainId, poolSalt, poolNonce, observationsData],
+        block,
+      });
+    }
+  }
 }
 
 function parseEvent(event: Event): {poolSalt: string; poolNonce: number; observationsData: Array<[number, number]>} {
@@ -74,8 +97,7 @@ function parseEvent(event: Event): {poolSalt: string; poolNonce: number; observa
 }
 
 export async function run(): Promise<void> {
-  const flashbotsProvider = await FlashbotsBundleProvider.create(provider, bundleSigner);
-  const flashbotBroadcastor = new FlashbotsBroadcastor(flashbotsProvider, PRIORITY_FEE, GAS_LIMIT);
+  const broadcastor = new PrivateBroadcastor(builders, PRIORITY_FEE, GAS_LIMIT, true, CHAIN_ID);
 
   dataFeed.attach(await job.dataFeed()); // Enforces dataFeed to be the job's one
 
@@ -97,7 +119,12 @@ export async function run(): Promise<void> {
     console.info(`Data fetch`, {poolSalt, poolNonce, observationsData});
     await Promise.all(
       SUPPORTED_CHAIN_IDS.map(async (chainId) => {
-        return flashbotBroadcastor.tryToWorkOnFlashbots(job, WORK_METHOD, [poolSalt, poolNonce, chainId, observationsData], block);
+        await broadcastor.tryToWork({
+          jobContract: job,
+          workMethod: WORK_METHOD,
+          workArguments: [chainId, poolSalt, poolNonce, observationsData],
+          block,
+        });
       }),
     );
   });

@@ -2,7 +2,7 @@ import {defineConfig} from '@dethcrypto/eth-sdk';
 
 export default defineConfig({
   contracts: {
-    goerli: {
+    sepolia: {
       dataFeedJob: '0x6c461C0296eBE3715820F1Cbde856219e06ac3B8',
       dataFeed: '0x553365bdda2Fd60608Fb05CB7ad32620e3A126DD',
     },
