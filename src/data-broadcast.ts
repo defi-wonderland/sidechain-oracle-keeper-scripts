@@ -57,26 +57,25 @@ export async function initialize(): Promise<void> {
   const sortedEvents = parsedEvents.sort((a, b) => a.poolNonce - b.poolNonce);
 
   const lastPoolNonceBridged: Record<string, Record<number, number>> = {};
-  for (const poolSalt of uniquePoolSalts) {
-    lastPoolNonceBridged[poolSalt] = {};
-    await Promise.all(
-      SUPPORTED_CHAIN_IDS.map(async (chainId) => {
-        lastPoolNonceBridged[poolSalt][chainId] = await job.lastPoolNonceBridged(chainId, poolSalt);
-      }),
-    );
-  }
 
   // Process each sorted event sequentially
   const blockListener = new BlockListener(provider);
   blockListener.stream(async (block: providers.Block) => {
+    for (const poolSalt of uniquePoolSalts) {
+      lastPoolNonceBridged[poolSalt] = {};
+      await Promise.all(
+        SUPPORTED_CHAIN_IDS.map(async (chainId) => {
+          lastPoolNonceBridged[poolSalt][chainId] = await job.lastPoolNonceBridged(chainId, poolSalt);
+        }),
+      );
+    }
+
     for (const event of sortedEvents) {
       const {poolSalt, poolNonce, observationsData} = event;
 
       for (const chainId of SUPPORTED_CHAIN_IDS) {
         const lastNonce = lastPoolNonceBridged[poolSalt][chainId];
-        if (poolNonce <= lastNonce || poolNonce >= lastNonce + 10) {
-          // TODO: remove max nonce limit
-          console.info(`Skipping event`, {poolSalt, poolNonce});
+        if (poolNonce != lastNonce + 1) {
           continue;
         }
 
@@ -108,29 +107,20 @@ export async function run(): Promise<void> {
   console.info('Waiting for event PoolObserved...');
   // eslint-disable-next-line new-cap
   provider.on(dataFeed.filters.PoolObserved(), async (event: Event) => {
-    /**
-     * NOTE: codebase for manual fetching of events
-     * const POOL_OBSERVED_EVENT_TOPIC = '0xbbea6ef77154be715a6de74ab5aae8710da33d74e2660ead1da5e867ea50d577'
-     * const receipt = await provider.getTransactionReceipt('0xea8fd1a7588a0d016da6a08c17daeb26d73673e63e911281b5977935602dae40')
-     * const event = receipt.logs.find((log) => log.topics[0] === POOL_OBSERVED_EVENT_TOPIC)
-     */
-
     const block = await provider.getBlock(event.blockNumber);
 
     console.info(`Event arrived`, {event});
     const {poolSalt, poolNonce, observationsData} = parseEvent(event);
 
     console.info(`Data fetch`, {poolSalt, poolNonce, observationsData});
-    await Promise.all(
-      SUPPORTED_CHAIN_IDS.map(async (chainId) => {
-        await broadcastor.tryToWork({
-          jobContract: job,
-          workMethod: WORK_METHOD,
-          workArguments: [chainId, poolSalt, poolNonce, observationsData],
-          block,
-        });
-      }),
-    );
+    for (const chainId of SUPPORTED_CHAIN_IDS) {
+      await broadcastor.tryToWork({
+        jobContract: job,
+        workMethod: WORK_METHOD,
+        workArguments: [chainId, poolSalt, poolNonce, observationsData],
+        block,
+      });
+    }
   });
 }
 
