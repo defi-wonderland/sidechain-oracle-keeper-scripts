@@ -16,11 +16,10 @@
   ],
   "private": true,
   "scripts": {
-    "postinstall": "eth-sdk",
     "start:data-time-fetch": "ts-node src/data-time-fetch.ts",
     "start:data-twap-fetch": "ts-node src/data-twap-fetch.ts",
     "start:data-broadcast": "ts-node src/data-broadcast.ts",
-    "build": "eth-sdk && tsc",
+    "build": "tsc",
     "prod:data-time-fetch": "node dist/data-time-fetch.js",
     "prod:data-twap-fetch": "node dist/data-twap-fetch.js",
     "prod:data-broadcast": "node dist/data-broadcast.js",
@@ -38,8 +37,6 @@
     "lodash.isequal": "4.5.0"
   },
   "devDependencies": {
-    "@dethcrypto/eth-sdk": "0.3.3",
-    "@dethcrypto/eth-sdk-client": "0.1.6",
     "@types/lodash.isequal": "4.5.6",
     "husky": ">=6",
     "lint-staged": ">=10",
