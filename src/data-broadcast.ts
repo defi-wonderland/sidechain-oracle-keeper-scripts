@@ -1,7 +1,7 @@
 import {getMainnetSdk} from '@dethcrypto/eth-sdk-client';
 import type {Event} from 'ethers';
 import {providers, Wallet} from 'ethers';
-import {PrivateBroadcastor, getEnvVariable} from '@keep3r-network/keeper-scripting-utils';
+import {BlockListener, PrivateBroadcastor, getEnvVariable} from '@keep3r-network/keeper-scripting-utils';
 import {PAST_BLOCKS, SUPPORTED_CHAIN_IDS} from './utils/contants';
 
 /* ==============================================================/*
@@ -39,6 +39,7 @@ export async function initialize(): Promise<void> {
   const broadcastor = new PrivateBroadcastor(builders, PRIORITY_FEE, GAS_LIMIT, true, CHAIN_ID);
 
   dataFeed.attach(await job.dataFeed()); // Enforces dataFeed to be the job's one
+  dataFeed.connect(providerForLogs);
 
   const block = await provider.getBlock('latest');
   const queryBlock = block.number - PAST_BLOCKS;
@@ -47,44 +48,47 @@ export async function initialize(): Promise<void> {
   // Query events and parse them
   const evtFilter = dataFeed.filters.PoolObserved();
   const queryResults = await dataFeed.queryFilter(evtFilter, queryBlock);
-  const parsedEvents = queryResults.map(event => parseEvent(event));
+  const parsedEvents = queryResults.map((event) => parseEvent(event));
 
   // Extract unique poolSalts
-  const uniquePoolSalts = new Set(parsedEvents.map(event => event.poolSalt));
+  const uniquePoolSalts = new Set(parsedEvents.map((event) => event.poolSalt));
 
   // Sort events by poolNonce
   const sortedEvents = parsedEvents.sort((a, b) => a.poolNonce - b.poolNonce);
 
-  // Mapping `lastObservedPoolNonce` per poolSalt, chainId
-  const lastObservedPoolNonce: Record<string, Record<number, number>> = {};
+  const lastPoolNonceBridged: Record<string, Record<number, number>> = {};
   for (const poolSalt of uniquePoolSalts) {
-    lastObservedPoolNonce[poolSalt] = {};
+    lastPoolNonceBridged[poolSalt] = {};
     await Promise.all(
       SUPPORTED_CHAIN_IDS.map(async (chainId) => {
-        lastObservedPoolNonce[poolSalt][chainId] = await job.lastPoolNonceBridged(chainId, poolSalt);
-      })
+        lastPoolNonceBridged[poolSalt][chainId] = await job.lastPoolNonceBridged(chainId, poolSalt);
+      }),
     );
   }
 
   // Process each sorted event sequentially
-  for (const event of sortedEvents) {
-    const { poolSalt, poolNonce, observationsData } = event;
+  const blockListener = new BlockListener(provider);
+  blockListener.stream(async (block: providers.Block) => {
+    for (const event of sortedEvents) {
+      const {poolSalt, poolNonce, observationsData} = event;
 
-    for (const chainId of SUPPORTED_CHAIN_IDS) {
-      // If poolNonce is less than or equal to lastObservedPoolNonce[poolSalt][chainId], skip processing
-      if (poolNonce <= lastObservedPoolNonce[poolSalt][chainId]) {
-        console.info(`Skipping event`, { poolSalt, poolNonce });
-        continue;
+      for (const chainId of SUPPORTED_CHAIN_IDS) {
+        const lastNonce = lastPoolNonceBridged[poolSalt][chainId];
+        if (poolNonce <= lastNonce || poolNonce >= lastNonce + 10) {
+          // TODO: remove max nonce limit
+          console.info(`Skipping event`, {poolSalt, poolNonce});
+          continue;
+        }
+
+        await broadcastor.tryToWork({
+          jobContract: job,
+          workMethod: WORK_METHOD,
+          workArguments: [chainId, poolSalt, poolNonce, observationsData],
+          block,
+        });
       }
-
-      await broadcastor.tryToWork({
-        jobContract: job,
-        workMethod: WORK_METHOD,
-        workArguments: [chainId, poolSalt, poolNonce, observationsData],
-        block,
-      });
     }
-  }
+  });
 }
 
 function parseEvent(event: Event): {poolSalt: string; poolNonce: number; observationsData: Array<[number, number]>} {
